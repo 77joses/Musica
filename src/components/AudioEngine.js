@@ -13,7 +13,6 @@ export function autoCorrelate(buffer, sampleRate) {
 
   let maxSamples = Math.floor(SIZE / 2);
   let bestOffset = -1;
-  let bestCorrelation = 0;
   let rms = 0;
 
   for (let i = 0; i < SIZE; i++) {
@@ -60,7 +59,7 @@ export const SynthEngines = {
       const gainNode = ctx.createGain();
       osc.type = i % 2 === 0 ? 'sine' : 'triangle';
       osc.frequency.setValueAtTime(freq * h, now);
-      gainNode.gain.setValueAtTime(0.1, now);
+      gainNode.gain.setValueAtTime(0.08, now);
       osc.connect(gainNode);
       gainNode.connect(masterGain);
       osc.start(now);
@@ -146,5 +145,36 @@ export const SynthEngines = {
     gainNode.connect(ctx.destination);
     osc.start(now);
     osc.stop(now + duration);
+  },
+
+  // Kĩgamba Leg Shaker: High frequency noise cluster simulating rattling metal beads
+  playKigamba: (ctx, duration) => {
+    const now = ctx.currentTime;
+    const bufferSize = ctx.sampleRate * duration;
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+
+    // Highpass filter out everything below 7000Hz for brilliant metallic crispness
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.setValueAtTime(7000, now);
+
+    const gainNode = ctx.createGain();
+    gainNode.gain.setValueAtTime(0.15, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    noise.connect(filter);
+    filter.connect(gainNode);
+    gainNode.connect(ctx.destination);
+
+    noise.start(now);
+    noise.stop(now + duration);
   }
 };
