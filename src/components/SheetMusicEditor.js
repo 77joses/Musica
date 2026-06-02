@@ -1,199 +1,107 @@
-import React, { useState, useRef } from 'react';
-import SheetMusicEditor from './SheetMusicEditor';
-import { autoCorrelate, frequencyToMidi, SynthEngines } from './AudioEngine';
+import React, { useEffect, useRef } from 'react';
 
-// Utility helper matrix that parses ABC alphabetical letters into specific synthesizer Hertz values
-const abcToFrequency = (note) => {
-  const clean = note.replace(/[^A-Gz,]/g, '');
-  if (clean.includes('z') || !clean) return 0;
-  
-  const baseFreqs = { 'C': 261.63, 'D': 293.66, 'E': 329.63, 'F': 349.23, 'G': 392.00, 'A': 440.00, 'B': 493.88 };
-  let freq = baseFreqs[clean[0]] || 0;
-  
-  if (note.includes(',,')) freq /= 4;
-  else if (note.includes(',')) freq /= 2;
-  return freq;
-};
+export default function SheetMusicEditor({ scoreData, setScoreData, lyrics, setLyrics, timeSignature, activeDurationModifier }) {
+  const notationRef = useRef(null);
 
-export default function AppLayout() {
-  const [isRecording, setIsRecording] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [lyrics, setLyrics] = useState("Nĩ we-ga Ma-ũ-mũ");
-  
-  const [scoreData, setScoreData] = useState({
-    voice: "C E G F",
-    wandindi: "E G A B",
-    coro: "C,, G,, C, G,,",
-    kihembe: "F z F z",
-    kigamba: "z F z F"
-  });
-
-  const audioCtxRef = useRef(null);
-  const analyserRef = useRef(null);
-  const streamRef = useRef(null);
-  const animationFrameRef = useRef(null);
-  
-  // Stabilization values to clean tracking glitches
-  const lastMidiRef = useRef(-1);
-  const pitchCountRef = useRef(0);
-  const detectedNotesArray = useRef([]);
-
-  const initAudio = () => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume();
-    }
+  const generateABCString = () => {
+    // Dynamically evaluate base note length defaults relative to Compound or Simple Time Meter settings
+    const baseUnit = timeSignature.includes('/8') ? '1/8' : '1/4';
+    return `
+X:1
+T:Gĩkũyũ Studio Production Score
+M:${timeSignature}
+L:${baseUnit}
+K:C
+%%staves [1 2 3 4 5]
+V:1 name="Voice (Organ)" clef=treble
+${scoreData.voice || 'z4'}
+w:${lyrics || ''}
+V:2 name="Wandindi" clef=treble
+${scoreData.wandindi || 'z4'}
+V:3 name="Coro" clef=treble
+${scoreData.coro || 'z4'}
+V:4 name="Kĩhembe" clef=perc
+${scoreData.kihembe || 'z4'}
+V:5 name="Kĩgamba" clef=perc
+${scoreData.kigamba || 'z4'}
+    `.trim();
   };
 
-  const startRecording = async () => {
-    initAudio();
-    setIsRecording(true);
-    detectedNotesArray.current = [];
-    pitchCountRef.current = 0;
-    lastMidiRef.current = -1;
+  useEffect(() => {
+    import('abcjs').then((ABCJS) => {
+      if (notationRef.current) {
+        ABCJS.default.renderAbc(notationRef.current, generateABCString(), {
+          responsive: 'resize',
+          add_classes: true,
+          scale: 0.95,
+          clickListener: (abcElem, tuneNumber, classes, analysis, drag) => {
+            if (!abcElem || abcElem.el_type !== "note") return;
+            
+            const staffKeys = ['voice', 'wandindi', 'coro', 'kihembe', 'kigamba'];
+            const targetTrack = staffKeys[abcElem.parentStaffIdx];
+            if (!targetTrack) return;
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      
-      const source = audioCtxRef.current.createMediaStreamSource(stream);
-      const analyser = audioCtxRef.current.createAnalyser();
-      analyser.fftSize = 2048;
-      source.connect(analyser);
-      analyserRef.current = analyser;
+            let notesArray = scoreData[targetTrack].split(/\s+/);
+            const index = abcElem.tuneNumber - 1;
+            if (index < 0 || index >= notesArray.length) return;
 
-      const dataArray = new Float32Array(analyser.fftSize);
-
-      const updatePitchLoop = () => {
-        analyser.getFloatTimeDomainData(dataArray);
-        const freq = autoCorrelate(dataArray, audioCtxRef.current.sampleRate);
-        
-        if (freq !== -1 && freq > 80 && freq < 800) {
-          const midi = frequencyToMidi(freq);
-          
-          // Debounce validation filter (Note must match across multiple continuous audio frames)
-          if (midi === lastMidiRef.current) {
-            pitchCountRef.current++;
-            if (pitchCountRef.current === 6) { // Stable hold achieved
-              const notesMapping = ["C", "C", "D", "D", "E", "F", "F", "G", "G", "A", "A", "B"];
-              const mappedNote = notesMapping[midi % 12];
-              
-              if (detectedNotesArray.current.length < 8) {
-                detectedNotesArray.current.push(mappedNote);
-                setScoreData(prev => ({
-                  ...prev,
-                  voice: detectedNotesArray.current.join(" ")
-                }));
-              }
+            // Handle Note Dragging Actions (Vertical Pitch Tuning Offset Metrics)
+            if (drag && drag.step !== 0) { // drag.step tracks pitch shifts up/down
+              let currentMidi = abcToMidiIndex(notesArray[index]) || 60;
+              // abcjs returns negative values for dragging up
+              let newMidi = currentMidi - drag.step; 
+              notesArray[index] = midiToAbcCharacter(newMidi, targetTrack);
+            } else {
+              // Standard Tap: Apply duration modifier selected in the toolbar
+              notesArray[index] = applyDurationModifier(notesArray[index], activeDurationModifier);
             }
-          } else {
-            lastMidiRef.current = midi;
-            pitchCountRef.current = 0;
+
+            setScoreData(prev => ({ ...prev, [targetTrack]: notesArray.join(" ") }));
           }
-        }
-        animationFrameRef.current = requestAnimationFrame(updatePitchLoop);
-      };
+        });
+      }
+    });
+  }, [scoreData, lyrics, timeSignature, activeDurationModifier]);
 
-      updatePitchLoop();
-    } catch (err) {
-      alert("Microphone connection blocked.");
-      setIsRecording(false);
-    }
+  const abcToMidiIndex = (abc) => {
+    if (!abc || abc.includes('z')) return 60;
+    const clean = abc.replace(/[^A-G^,_]/g, '');
+    const map = { 'C':60, 'D':62, 'E':64, 'F':65, 'G':67, 'A':69, 'B':71 };
+    let base = map[clean.replace(/[^A-G]/g, '')] || 60;
+    if (clean.includes('^')) base += 1;
+    if (clean.includes('_')) base -= 1;
+    if (clean.includes(',,')) base -= 24;
+    else if (clean.includes(',')) base -= 12;
+    return base;
   };
 
-  const stopRecording = () => {
-    setIsRecording(false);
-    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
+  const midiToAbcCharacter = (midi, track) => {
+    if (track === 'kihembe' || track === 'kigamba') return 'F';
+    const notes = ["C", "^C", "D", "^D", "E", "F", "^F", "G", "^G", "A", "^A", "B"];
+    let octave = Math.floor(midi / 12) - 5;
+    let name = notes[midi % 12];
+    if (octave < 0) {
+      name += (octave === -2) ? ",," : ",";
     }
+    return name;
   };
 
-  // TRUE STUDIO MULTI-TRACK PLAYBACK: Reads whatever text is currently displayed on screen
-  const playDynamicStudio = () => {
-    initAudio();
-    if (isPlaying) return;
-    setIsPlaying(true);
-
-    const ctx = audioCtxRef.current;
-    const tempoDelay = 500; // 500ms duration per beat slot
-
-    // Turn space-separated strings into navigable data blocks
-    const voiceArr = scoreData.voice.split(" ");
-    const wandindiArr = scoreData.wandindi.split(" ");
-    const coroArr = scoreData.coro.split(" ");
-    const kihembeArr = scoreData.kihembe.split(" ");
-    const kigambaArr = scoreData.kigamba.split(" ");
-
-    const maxBeats = Math.max(voiceArr.length, wandindiArr.length, coroArr.length, kihembeArr.length, kigambaArr.length);
-
-    for (let beat = 0; beat < maxBeats; beat++) {
-      const timeOffset = beat * tempoDelay;
-
-      setTimeout(() => {
-        if (!audioCtxRef.current || !isPlaying) return;
-
-        // 1. Voice Staff -> Organ Synth
-        if (voiceArr[beat] && voiceArr[beat] !== 'z') {
-          const hz = abcToFrequency(voiceArr[beat]);
-          if (hz > 0) SynthEngines.playChurchOrgan(ctx, hz, 0.4);
-        }
-
-        // 2. Wandindi Staff
-        if (wandindiArr[beat] && wandindiArr[beat] !== 'z') {
-          const hz = abcToFrequency(wandindiArr[beat]);
-          if (hz > 0) SynthEngines.playWandindi(ctx, hz * 2, 0.4); // Scale higher register octave
-        }
-
-        // 3. Coro Staff
-        if (coroArr[beat] && coroArr[beat] !== 'z') {
-          const hz = abcToFrequency(coroArr[beat]);
-          if (hz > 0) SynthEngines.playCoro(ctx, hz, 0.4);
-        }
-
-        // 4. Kĩhembe Staff
-        if (kihembeArr[beat] && kihembeArr[beat] !== 'z') {
-          const type = (beat % 2 === 0) ? 'bass' : 'rim';
-          SynthEngines.playKihembe(ctx, type, 0.25);
-        }
-
-        // 5. Kĩgamba Staff
-        if (kigambaArr[beat] && kigambaArr[beat] !== 'z') {
-          SynthEngines.playKigamba(ctx, 0.15);
-        }
-
-      }, timeOffset);
-    }
-
-    setTimeout(() => setIsPlaying(false), maxBeats * tempoDelay + 100);
+  const applyDurationModifier = (noteBase, mod) => {
+    let cleanNote = noteBase.replace(/[\d\/>]+/g, '');
+    if (mod === 'normal') return cleanNote;
+    if (mod === 'double') return cleanNote + "2";
+    if (mod === 'half') return cleanNote + "/2";
+    if (mod === 'dotted') return cleanNote + ">"; // ABC syntax for dotted rhythms
+    return noteBase;
   };
 
   return (
-    <div style={{ padding: '5px' }}>
-      <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
-        <button
-          onClick={isRecording ? stopRecording : startRecording}
-          style={{ flex: 1, backgroundColor: isRecording ? '#d32f2f' : '#4CAF50', color: '#fff', padding: '15px', fontWeight: 'bold', border: 'none', borderRadius: '6px', fontSize: '15px' }}
-        >
-          {isRecording ? '🛑 Stop Rec' : '🎤 Record Voice'}
-        </button>
-
-        <button
-          onClick={isPlaying ? () => setIsPlaying(false) : playDynamicStudio}
-          style={{ flex: 1, backgroundColor: isPlaying ? '#ff9800' : '#2196F3', color: '#fff', padding: '15px', fontWeight: 'bold', border: 'none', borderRadius: '6px', fontSize: '15px' }}
-        >
-          {isPlaying ? '⏹️ Stop Play' : '▶️ Play Live Engine'}
-        </button>
+    <div style={{ backgroundColor: '#1a1a1a', padding: '15px', borderRadius: '8px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+        <h3 style={{ color: '#4CAF50', margin: 0, fontSize: '15px' }}>🎼 Interaction Score Matrix</h3>
+        <span style={{ fontSize: '11px', color: '#888' }}>Drag vertically to shift pitch • Tap to change length</span>
       </div>
-
-      <SheetMusicEditor 
-        scoreData={scoreData} 
-        setScoreData={setScoreData}
-        lyrics={lyrics}
-        setLyrics={setLyrics}
-      />
+      <div ref={notationRef} style={{ backgroundColor: '#ffffff', padding: '10px', borderRadius: '4px', overflowX: 'auto' }} />
     </div>
   );
 }
