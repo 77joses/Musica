@@ -1,180 +1,129 @@
-export function frequencyToMidi(frequency) {
-  const noteNum = 12 * (Math.log(frequency / 440) / Math.log(2));
-  return Math.round(noteNum) + 69;
-}
+import React, { useEffect, useRef } from 'react';
 
-export function autoCorrelate(buffer, sampleRate) {
-  const SIZE = buffer.length;
-  let c = 0;
-  for (let i = 0; i < SIZE; i++) {
-    if (Math.abs(buffer[i]) < 0.01) c++;
-  }
-  if (c / SIZE > 0.99) return -1;
+export default function SheetMusicEditor({ scoreData, setScoreData, lyrics, setLyrics }) {
+  const notationRef = useRef(null);
 
-  let maxSamples = Math.floor(SIZE / 2);
-  let bestOffset = -1;
-  let rms = 0;
+  // Generates the visual five-staff layout string using standard ABC notation formats
+  const generateABCString = () => {
+    return `
+X:1
+T:Gĩkũyũ Studio Workstation Score
+M:4/4
+L:1/4
+K:C
+%%staves [1 2 3 4 5]
+V:1 name="Voice (Organ)" clef=treble
+${scoreData.voice || 'z4'}
+w:${lyrics || 'No lyrics added yet'}
+V:2 name="Wandindi" clef=treble
+${scoreData.wandindi || 'z4'}
+V:3 name="Coro" clef=treble
+${scoreData.coro || 'z4'}
+V:4 name="Kĩhembe" clef=perc
+${scoreData.kihembe || 'z4'}
+V:5 name="Kĩgamba" clef=perc
+${scoreData.kigamba || 'z4'}
+    `.trim();
+  };
 
-  for (let i = 0; i < SIZE; i++) {
-    rms += buffer[i] * buffer[i];
-  }
-  rms = Math.sqrt(rms / SIZE);
-  if (rms < 0.02) return -1;
-
-  let correlations = new Array(maxSamples);
-  for (let offset = 0; offset < maxSamples; offset++) {
-    let correlation = 0;
-    for (let i = 0; i < maxSamples; i++) {
-      correlation += Math.abs(buffer[i] - buffer[i + offset]);
-    }
-    correlations[offset] = correlation;
-  }
-
-  let d = 0;
-  while (correlations[d] < correlations[d + 1]) d++;
-  let minval = 1000000;
-  for (let i = d; i < maxSamples; i++) {
-    if (correlations[i] < minval) {
-      minval = correlations[i];
-      bestOffset = i;
-    }
-  }
-
-  if (bestOffset !== -1) return sampleRate / bestOffset;
-  return -1;
-}
-
-export const SynthEngines = {
-  playChurchOrgan: (ctx, freq, duration) => {
-    const now = ctx.currentTime;
-    const masterGain = ctx.createGain();
-    masterGain.gain.setValueAtTime(0, now);
-    masterGain.gain.linearRampToValueAtTime(0.3, now + 0.05);
-    masterGain.gain.setValueAtTime(0.3, now + duration - 0.05);
-    masterGain.gain.linearRampToValueAtTime(0, now + duration);
-    masterGain.connect(ctx.destination);
-
-    [1, 2, 3, 4].forEach((h, i) => {
-      const osc = ctx.createOscillator();
-      const gainNode = ctx.createGain();
-      osc.type = i % 2 === 0 ? 'sine' : 'triangle';
-      osc.frequency.setValueAtTime(freq * h, now);
-      gainNode.gain.setValueAtTime(0.08, now);
-      osc.connect(gainNode);
-      gainNode.connect(masterGain);
-      osc.start(now);
-      osc.stop(now + duration);
+  useEffect(() => {
+    // Dynamic import to prevent Server-Side Rendering (SSR) crashes on mobile web deployment
+    import('abcjs').then((ABCJS) => {
+      if (notationRef.current) {
+        ABCJS.default.renderAbc(notationRef.current, generateABCString(), {
+          responsive: 'resize',
+          add_classes: true,
+          scale: 1.0
+        });
+      }
     });
-  },
+  }, [scoreData, lyrics]);
 
-  playWandindi: (ctx, freq, duration) => {
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gainNode = ctx.createGain();
-    const filter = ctx.createBiquadFilter();
-    const lfo = ctx.createOscillator();
-    const lfoGain = ctx.createGain();
+  return (
+    <div style={{ backgroundColor: '#1e1e1e', padding: '20px', borderRadius: '8px', marginTop: '20px' }}>
+      <h2 style={{ color: '#4CAF50', marginTop: 0 }}>🎼 Multi-Staff Editor</h2>
+      
+      {/* Scrollable sheet music viewing container optimized for phone dimensions */}
+      <div 
+        ref={notationRef} 
+        style={{ 
+          backgroundColor: '#ffffff', 
+          padding: '15px', 
+          borderRadius: '4px', 
+          color: '#000000',
+          overflowX: 'auto',
+          minWidth: '100%'
+        }}
+      />
 
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(freq, now);
-    filter.type = 'highpass';
-    filter.frequency.setValueAtTime(380, now);
-    lfo.frequency.setValueAtTime(6, now);
-    lfoGain.gain.setValueAtTime(4, now);
+      {/* Editing Controls Panel */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '20px' }}>
+        <div>
+          <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
+            Edit Song Lyrics (Separate syllables with dashes):
+          </label>
+          <input 
+            type="text" 
+            value={lyrics}
+            onChange={(e) => setLyrics(e.target.value)}
+            placeholder="e.g., Nĩ we-ga Ma-ũ-mũ nĩ tũ-gũ-kena"
+            style={{ 
+              width: '100%', 
+              padding: '12px', 
+              borderRadius: '4px', 
+              border: '1px solid #444', 
+              backgroundColor: '#333', 
+              color: '#fff',
+              fontSize: '16px' 
+            }}
+          />
+        </div>
 
-    gainNode.gain.setValueAtTime(0, now);
-    gainNode.gain.linearRampToValueAtTime(0.25, now + 0.08);
-    gainNode.gain.setValueAtTime(0.25, now + duration - 0.05);
-    gainNode.gain.linearRampToValueAtTime(0, now + duration);
-
-    lfo.connect(lfoGain);
-    lfoGain.connect(osc.frequency);
-    osc.connect(filter);
-    filter.connect(gainNode);
-    gainNode.connect(ctx.destination);
-
-    lfo.start(now);
-    osc.start(now);
-    lfo.stop(now + duration);
-    osc.stop(now + duration);
-  },
-
-  playCoro: (ctx, freq, duration) => {
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gainNode = ctx.createGain();
-    const filter = ctx.createBiquadFilter();
-
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(freq, now);
-    filter.type = 'bandpass';
-    filter.Q.setValueAtTime(5, now);
-    filter.frequency.setValueAtTime(1200, now);
-    filter.frequency.exponentialRampToValueAtTime(650, now + 0.15);
-
-    gainNode.gain.setValueAtTime(0, now);
-    gainNode.gain.linearRampToValueAtTime(0.35, now + 0.03);
-    gainNode.gain.setValueAtTime(0.35, now + duration - 0.07);
-    gainNode.gain.linearRampToValueAtTime(0, now + duration);
-
-    osc.connect(filter);
-    filter.connect(gainNode);
-    gainNode.connect(ctx.destination);
-
-    osc.start(now);
-    osc.stop(now + duration);
-  },
-
-  playKihembe: (ctx, noteType, duration) => {
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gainNode = ctx.createGain();
-
-    osc.type = 'sine';
-    if (noteType === 'bass') {
-      osc.frequency.setValueAtTime(95, now);
-      osc.frequency.exponentialRampToValueAtTime(52, now + 0.12);
-    } else {
-      osc.frequency.setValueAtTime(180, now);
-      osc.frequency.exponentialRampToValueAtTime(110, now + 0.08);
-    }
-
-    gainNode.gain.setValueAtTime(0.5, now);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
-    osc.connect(gainNode);
-    gainNode.connect(ctx.destination);
-    osc.start(now);
-    osc.stop(now + duration);
-  },
-
-  // Kĩgamba Leg Shaker: High frequency noise cluster simulating rattling metal beads
-  playKigamba: (ctx, duration) => {
-    const now = ctx.currentTime;
-    const bufferSize = ctx.sampleRate * duration;
-    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = Math.random() * 2 - 1;
-    }
-
-    const noise = ctx.createBufferSource();
-    noise.buffer = buffer;
-
-    // Highpass filter out everything below 7000Hz for brilliant metallic crispness
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'highpass';
-    filter.frequency.setValueAtTime(7000, now);
-
-    const gainNode = ctx.createGain();
-    gainNode.gain.setValueAtTime(0.15, now);
-    gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration);
-
-    noise.connect(filter);
-    filter.connect(gainNode);
-    gainNode.connect(ctx.destination);
-
-    noise.start(now);
-    noise.stop(now + duration);
-  }
-};
+        <div>
+          <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
+            Quick Workspace Actions:
+          </label>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button 
+              onClick={() => setScoreData(prev => ({...prev, voice: "C D E F"}))} 
+              style={{ 
+                flex: 1, 
+                backgroundColor: '#333', 
+                color: '#fff', 
+                border: '1px solid #555', 
+                padding: '12px', 
+                cursor: 'pointer', 
+                borderRadius: '4px',
+                fontWeight: 'bold'
+              }}
+            >
+              Reset Voice (C-D-E-F)
+            </button>
+            
+            <button 
+              onClick={() => setScoreData(prev => ({
+                ...prev, 
+                wandindi: "E G A B", 
+                coro: "C,, E,, G,, C,", 
+                kihembe: "F z F z", 
+                kigamba: "z F z F"
+              }))} 
+              style={{ 
+                flex: 1, 
+                backgroundColor: '#333', 
+                color: '#fff', 
+                border: '1px solid #555', 
+                padding: '12px', 
+                cursor: 'pointer', 
+                borderRadius: '4px',
+                fontWeight: 'bold'
+              }}
+            >
+              Generate Full Backing Loop
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
