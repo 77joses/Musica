@@ -4,7 +4,6 @@ export default function SheetMusicEditor({ scoreData, setScoreData, lyrics, setL
   const notationRef = useRef(null);
 
   const generateABCString = () => {
-    // Dynamically evaluate base note length defaults relative to Compound or Simple Time Meter settings
     const baseUnit = timeSignature.includes('/8') ? '1/8' : '1/4';
     return `
 X:1
@@ -30,10 +29,12 @@ ${scoreData.kigamba || 'z4'}
   useEffect(() => {
     import('abcjs').then((ABCJS) => {
       if (notationRef.current) {
+        // Render with explicit drag capabilities enabled for touch interaction matrices
         ABCJS.default.renderAbc(notationRef.current, generateABCString(), {
           responsive: 'resize',
           add_classes: true,
           scale: 0.95,
+          dragging: true, // Turns on native vertical note shifting vectors
           clickListener: (abcElem, tuneNumber, classes, analysis, drag) => {
             if (!abcElem || abcElem.el_type !== "note") return;
             
@@ -45,14 +46,13 @@ ${scoreData.kigamba || 'z4'}
             const index = abcElem.tuneNumber - 1;
             if (index < 0 || index >= notesArray.length) return;
 
-            // Handle Note Dragging Actions (Vertical Pitch Tuning Offset Metrics)
-            if (drag && drag.step !== 0) { // drag.step tracks pitch shifts up/down
+            if (drag && drag.step !== 0) {
+              // Note Dragged: Recalculate pitch using the drag offset tracking metrics
               let currentMidi = abcToMidiIndex(notesArray[index]) || 60;
-              // abcjs returns negative values for dragging up
               let newMidi = currentMidi - drag.step; 
               notesArray[index] = midiToAbcCharacter(newMidi, targetTrack);
             } else {
-              // Standard Tap: Apply duration modifier selected in the toolbar
+              // Note Tapped: Re-apply current selection tool duration lengths
               notesArray[index] = applyDurationModifier(notesArray[index], activeDurationModifier);
             }
 
@@ -91,7 +91,7 @@ ${scoreData.kigamba || 'z4'}
     if (mod === 'normal') return cleanNote;
     if (mod === 'double') return cleanNote + "2";
     if (mod === 'half') return cleanNote + "/2";
-    if (mod === 'dotted') return cleanNote + ">"; // ABC syntax for dotted rhythms
+    if (mod === 'dotted') return cleanNote + ">"; // ABC dynamic symbol for dotted notes
     return noteBase;
   };
 
@@ -99,7 +99,7 @@ ${scoreData.kigamba || 'z4'}
     <div style={{ backgroundColor: '#1a1a1a', padding: '15px', borderRadius: '8px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
         <h3 style={{ color: '#4CAF50', margin: 0, fontSize: '15px' }}>🎼 Interaction Score Matrix</h3>
-        <span style={{ fontSize: '11px', color: '#888' }}>Drag vertically to shift pitch • Tap to change length</span>
+        <span style={{ fontSize: '11px', color: '#888' }}>Drag notes vertically to change pitch</span>
       </div>
       <div ref={notationRef} style={{ backgroundColor: '#ffffff', padding: '10px', borderRadius: '4px', overflowX: 'auto' }} />
     </div>
