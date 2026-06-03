@@ -75,7 +75,6 @@ export default function AppLayout() {
     const ctx = audioCtxRef.current;
     const startTime = ctx.currentTime + 0.05; 
 
-    // Compound time changes the rhythmic timing interval scaling calculations
     const beatUnitDuration = timeSignature.includes('/8') ? 0.32 : 0.50; 
 
     const currentData = liveScoreRef.current;
