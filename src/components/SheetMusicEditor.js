@@ -29,12 +29,11 @@ ${scoreData.kigamba || 'z4'}
   useEffect(() => {
     import('abcjs').then((ABCJS) => {
       if (notationRef.current) {
-        // Render with explicit drag capabilities enabled for touch interaction matrices
         ABCJS.default.renderAbc(notationRef.current, generateABCString(), {
           responsive: 'resize',
           add_classes: true,
           scale: 0.95,
-          dragging: true, // Turns on native vertical note shifting vectors
+          dragging: true, // Activates mobile touch dragging layers
           clickListener: (abcElem, tuneNumber, classes, analysis, drag) => {
             if (!abcElem || abcElem.el_type !== "note") return;
             
@@ -47,12 +46,12 @@ ${scoreData.kigamba || 'z4'}
             if (index < 0 || index >= notesArray.length) return;
 
             if (drag && drag.step !== 0) {
-              // Note Dragged: Recalculate pitch using the drag offset tracking metrics
+              // Note Dragged: Recalculate pitch values from drag tracking profiles
               let currentMidi = abcToMidiIndex(notesArray[index]) || 60;
               let newMidi = currentMidi - drag.step; 
               notesArray[index] = midiToAbcCharacter(newMidi, targetTrack);
             } else {
-              // Note Tapped: Re-apply current selection tool duration lengths
+              // Note Tapped: Append duration parameters from layout tools
               notesArray[index] = applyDurationModifier(notesArray[index], activeDurationModifier);
             }
 
@@ -91,7 +90,7 @@ ${scoreData.kigamba || 'z4'}
     if (mod === 'normal') return cleanNote;
     if (mod === 'double') return cleanNote + "2";
     if (mod === 'half') return cleanNote + "/2";
-    if (mod === 'dotted') return cleanNote + ">"; // ABC dynamic symbol for dotted notes
+    if (mod === 'dotted') return cleanNote + ">"; // Appends dotted structures
     return noteBase;
   };
 
