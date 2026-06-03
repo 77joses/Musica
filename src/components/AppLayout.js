@@ -3,7 +3,7 @@ import SheetMusicEditor from './SheetMusicEditor';
 import { abcToMidi, midiToFrequency, parseDuration, SynthEngines } from './AudioEngine';
 
 export default function AppLayout() {
-  const [timeSignature, setTimeSignature] = useState("6/8"); // Default to Gĩkũyũ compound meter structures
+  const [timeSignature, setTimeSignature] = useState("6/8"); 
   const [durationMode, setDurationMode] = useState("normal");
   const [isRecording, setIsRecording] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -19,7 +19,6 @@ export default function AppLayout() {
 
   const audioCtxRef = useRef(null);
   const liveScoreRef = useRef(scoreData);
-  const voiceBlobUrlRef = useRef(null);
   const voiceAudioBufferRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
@@ -38,11 +37,9 @@ export default function AppLayout() {
   const toggleRecording = async () => {
     await initAudio();
     if (isRecording) {
-      // Stop Recording Pipeline
       setIsRecording(false);
       if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
     } else {
-      // Start Recording Pipeline
       setIsRecording(true);
       recordedChunksRef.current = [];
       try {
@@ -55,9 +52,6 @@ export default function AppLayout() {
 
         mediaRecorderRef.current.onstop = async () => {
           const blob = new Blob(recordedChunksRef.current, { type: 'audio/webm' });
-          voiceBlobUrlRef.current = URL.createObjectURL(blob);
-          
-          // Decode raw channel array info into standard AudioBuffer arrays
           const arrayBuffer = await blob.arrayBuffer();
           audioCtxRef.current.decodeAudioData(arrayBuffer, (decodedBuffer) => {
             voiceAudioBufferRef.current = decodedBuffer;
@@ -67,29 +61,28 @@ export default function AppLayout() {
 
         mediaRecorderRef.current.start();
       } catch (err) {
-        alert("Failed to connect microphone channel source.");
+        alert("Microphone connection failed.");
         setIsRecording(false);
       }
     }
   };
 
-  // Sample-Accurate Parallel Audio Execution Matrix Loops
   const playStudioTracks = async () => {
     await initAudio();
     if (isPlaying) return;
     setIsPlaying(true);
 
     const ctx = audioCtxRef.current;
-    const startTime = ctx.currentTime + 0.05; // Guard interval buffer against playback lag spikes
+    const startTime = ctx.currentTime + 0.05; 
 
-    // Set base time intervals based on the selected time signature (compound 6/8 vs simple 4/4)
-    const beatUnitDuration = timeSignature.includes('/8') ? 0.30 : 0.45; 
+    // Compound time changes the rhythmic timing interval scaling calculations
+    const beatUnitDuration = timeSignature.includes('/8') ? 0.32 : 0.50; 
 
     const currentData = liveScoreRef.current;
     const tracks = ['voice', 'wandindi', 'coro', 'kihembe', 'kigamba'];
     let globalTimelineOffset = 0;
 
-    // 1. Play the Recorded Voice Buffer (aligned exactly with synthesis playback start)
+    // TARGET SYNC INJECTION: Plays recorded vocal tracks exactly in line with the synths
     if (voiceAudioBufferRef.current) {
       const voiceSource = ctx.createBufferSource();
       voiceSource.buffer = voiceAudioBufferRef.current;
@@ -97,10 +90,8 @@ export default function AppLayout() {
       voiceSource.start(startTime);
     }
 
-    // 2. Parse and Schedule the Synthesis Notes
     const tokenizedTracks = {};
     tracks.forEach(t => { tokenizedTracks[t] = currentData[t].split(/\s+/) });
-
     const maxBeats = Math.max(...tracks.map(t => tokenizedTracks[t].length));
 
     for (let i = 0; i < maxBeats; i++) {
@@ -129,7 +120,6 @@ export default function AppLayout() {
         }
       });
 
-      // Advance the timeline clock by the largest scheduled increment
       let maxStepScalar = 1;
       tracks.forEach(t => {
         if (tokenizedTracks[t][i]) {
@@ -146,35 +136,33 @@ export default function AppLayout() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
       
-      {/* Time Signature Configuration Matrix Toolbar */}
-      <div style={{ backgroundColor: '#1a1a1a', padding: '12px', borderRadius: '8px', display: 'flex', flexWrap: 'wrap', gap: '15px', alignItems: 'center' }}>
+      {/* Structural Configuration Settings Bar */}
+      <div style={{ backgroundColor: '#1a1a1a', padding: '12px', borderRadius: '8px', display: 'flex', flexWrap: 'wrap', gap: '15px' }}>
         <div>
-          <label style={{ fontSize: '13px', color: '#aaa', marginRight: '8px' }}>Rhythmic Time Signature Meter:</label>
+          <label style={{ fontSize: '13px', color: '#aaa', marginRight: '8px' }}>Time Signature Meter:</label>
           <select value={timeSignature} onChange={(e) => setTimeSignature(e.target.value)} style={{ padding: '8px', borderRadius: '4px', backgroundColor: '#333', color: '#fff', border: '1px solid #555' }}>
             <option value="6/8">6/8 (Mũthĩrĩgũ / Compound)</option>
             <option value="12/8">12/8 (Mũgoidi Rhythms)</option>
             <option value="4/4">4/4 (Standard Studio)</option>
-            <option value="3/4">3/4 (Triple Meter Waltz)</option>
           </select>
         </div>
 
         <div>
-          <label style={{ fontSize: '13px', color: '#aaa', marginRight: '8px' }}>Duration Modifier Tool:</label>
+          <label style={{ fontSize: '13px', color: '#aaa', marginRight: '8px' }}>Duration Length Modifier Tool:</label>
           <select value={durationMode} onChange={(e) => setDurationMode(e.target.value)} style={{ padding: '8px', borderRadius: '4px', backgroundColor: '#333', color: '#fff', border: '1px solid #555' }}>
-            <option value="normal">Normal (Standard Unit)</option>
-            <option value="dotted">Dotted Note (Multiply length by 1.5x)</option>
-            <option value="double">Double Duration (2x longer)</option>
-            <option value="half">Half Duration (1/2 length division)</option>
+            <option value="normal">Normal Duration</option>
+            <option value="dotted">Dotted Note (1.5x)</option>
+            <option value="double">Double Note (2x)</option>
+            <option value="half">Half Note (1/2x)</option>
           </select>
         </div>
       </div>
 
-      {/* Control Buttons Workspace Panel */}
       <div style={{ display: 'flex', gap: '10px' }}>
-        <button onClick={toggleRecording} style={{ flex: 1, backgroundColor: isRecording ? '#d32f2f' : '#4CAF50', color: '#fff', padding: '15px', fontWeight: 'bold', border: 'none', borderRadius: '6px', fontSize: '15px' }}>
+        <button onClick={toggleRecording} style={{ flex: 1, backgroundColor: isRecording ? '#d32f2f' : '#4CAF50', color: '#fff', padding: '15px', fontWeight: 'bold', border: 'none', borderRadius: '6px' }}>
           {isRecording ? '🛑 Stop Recording' : '🎤 Record Voice Clip'}
         </button>
-        <button onClick={playStudioTracks} style={{ flex: 1, backgroundColor: isPlaying ? '#ff9800' : '#2196F3', color: '#fff', padding: '15px', fontWeight: 'bold', border: 'none', borderRadius: '6px', fontSize: '15px', opacity: isPlaying ? 0.6 : 1 }} disabled={isPlaying}>
+        <button onClick={playStudioTracks} style={{ flex: 1, backgroundColor: '#2196F3', color: '#fff', padding: '15px', fontWeight: 'bold', border: 'none', borderRadius: '6px' }}>
           ▶️ Play Full Live Mix
         </button>
       </div>
