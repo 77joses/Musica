@@ -1,27 +1,23 @@
 import React, { useState, useRef, useEffect } from 'react';
 import SheetMusicEditor from './SheetMusicEditor';
-import { abcToMidi, midiToFrequency, parseDuration, SynthEngines } from './AudioEngine';
+import { pitchTrackerAutocorrelate, frequencyToMidi, scheduleOrganNote } from './AudioEngine';
 
 export default function AppLayout() {
-  const [timeSignature, setTimeSignature] = useState("6/8"); 
-  const [durationMode, setDurationMode] = useState("normal");
   const [isRecording, setIsRecording] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [lyrics, setLyrics] = useState("Nĩ we-ga Ma-ũ-mũ nĩ tũ-gũ-kena");
-  
-  const [scoreData, setScoreData] = useState({
-    voice: "C D E F z z",
-    wandindi: "E G A B z z",
-    coro: "C,, G,, C, G,, z z",
-    kihembe: "F z F z F F",
-    kigamba: "z F z F z F"
-  });
+  const [lyrics, setLyrics] = useState("A a a a");
+  const [scoreData, setScoreData] = useState({ voice: "z4", wandindi: "z4", coro: "z4", kihembe: "z4", kigamba: "z4" });
 
   const audioCtxRef = useRef(null);
   const liveScoreRef = useRef(scoreData);
-  const voiceAudioBufferRef = useRef(null);
+  const voiceAudioBufferRef = useRef(null); // High-fidelity in-memory audio storage
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
+  const animationFrameRef = useRef(null);
+
+  // Time tracking vectors
+  const trackingNotesTimeline = useRef([]);
+  const recordingStartTimeRef = useRef(0);
 
   useEffect(() => { liveScoreRef.current = scoreData; }, [scoreData]);
 
@@ -34,142 +30,141 @@ export default function AppLayout() {
     }
   };
 
-  const toggleRecording = async () => {
+  const startStudioRecording = async () => {
     await initAudio();
-    if (isRecording) {
-      setIsRecording(false);
-      if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
-    } else {
-      setIsRecording(true);
-      recordedChunksRef.current = [];
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorderRef.current = new MediaRecorder(stream);
+    setIsRecording(true);
+    recordedChunksRef.current = [];
+    trackingNotesTimeline.current = [];
+    voiceAudioBufferRef.current = null;
+    recordingStartTimeRef.current = audioCtxRef.current.currentTime;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // Pipeline Step A: Raw Audio Stream Capture Engine
+      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      mediaRecorderRef.current.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+      
+      mediaRecorderRef.current.onstop = async () => {
+        const rawBlob = new Blob(recordedChunksRef.current, { type: 'audio/webm' });
+        const arrayBuffer = await rawBlob.arrayBuffer();
         
-        mediaRecorderRef.current.ondataavailable = (e) => {
-          if (e.data.size > 0) recordedChunksRef.current.push(e.data);
-        };
+        // Decode block to store your uncompressed voice recording safely in memory
+        audioCtxRef.current.decodeAudioData(arrayBuffer, (decodedAudioPCM) => {
+          voiceAudioBufferRef.current = decodedAudioPCM;
+        }, (err) => console.error("PCM Audio Decoding Failure:", err));
 
-        mediaRecorderRef.current.onstop = async () => {
-          const blob = new Blob(recordedChunksRef.current, { type: 'audio/webm' });
-          const arrayBuffer = await blob.arrayBuffer();
-          audioCtxRef.current.decodeAudioData(arrayBuffer, (decodedBuffer) => {
-            voiceAudioBufferRef.current = decodedBuffer;
-          });
-          stream.getTracks().forEach(t => t.stop());
-        };
+        stream.getTracks().forEach(track => track.stop());
+      };
 
-        mediaRecorderRef.current.start();
-      } catch (err) {
-        alert("Microphone connection failed.");
-        setIsRecording(false);
-      }
+      // Pipeline Step B: Real-Time Audio Engine Pitch Extraction
+      const sourceNode = audioCtxRef.current.createMediaStreamSource(stream);
+      const analyserNode = audioCtxRef.current.createAnalyser();
+      analyserNode.fftSize = 2048;
+      sourceNode.connect(analyserNode);
+
+      const bufferLength = analyserNode.fftSize;
+      const dataWindowArray = new Float32Array(bufferLength);
+      let lastIdentifiedMidi = -1;
+      let frameHoldCounter = 0;
+
+      const continuousPitchAnalysisLoop = () => {
+        analyserNode.getFloatTimeDomainData(dataWindowArray);
+        const currentHz = pitchTrackerAutocorrelate(dataWindowArray, audioCtxRef.current.sampleRate);
+        
+        if (currentHz !== -1 && currentHz > 75 && currentHz < 700) {
+          const calculatedMidi = frequencyToMidi(currentHz);
+          
+          if (calculatedMidi === lastIdentifiedMidi) {
+            frameHoldCounter++;
+            if (frameHoldCounter === 5) { // Pitch hold validated (approx 100ms stability threshold)
+              const timestampOffset = audioCtxRef.current.currentTime - recordingStartTimeRef.current;
+              
+              const notesDictionary = ["C", "^C", "D", "^D", "E", "F", "^F", "G", "^G", "A", "^A", "B"];
+              let name = notesDictionary[calculatedMidi % 12];
+              let octaveFactor = Math.floor(calculatedMidi / 12) - 5;
+              if (octaveFactor < 0) name += (octaveFactor === -2) ? ",," : ",";
+
+              // Append validated performance event to tracking timeline
+              trackingNotesTimeline.current.push({ midi: calculatedMidi, abc: name, time: timestampOffset });
+              
+              // Map the tracking timeline arrays back onto your sheet music view component
+              const sheetMusicString = trackingNotesTimeline.current.map(item => item.abc).join(" ");
+              setScoreData(prev => ({ ...prev, voice: sheetMusicString || 'z4' }));
+            }
+          } else {
+            lastIdentifiedMidi = calculatedMidi;
+            frameHoldCounter = 0;
+          }
+        }
+        animationFrameRef.current = requestAnimationFrame(continuousPitchAnalysisLoop);
+      };
+
+      mediaRecorderRef.current.start();
+      continuousPitchAnalysisLoop();
+    } catch (err) {
+      alert("Microphone connection failed.");
+      setIsRecording(false);
     }
   };
 
-  const playStudioTracks = async () => {
+  const stopStudioRecording = () => {
+    setIsRecording(false);
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
+  };
+
+  // TIMELINE SYNCHRONIZATION ALIGNMENT PLAYBACK ENGINE
+  const runSynchronizedPlayback = async () => {
     await initAudio();
     if (isPlaying) return;
     setIsPlaying(true);
 
     const ctx = audioCtxRef.current;
-    const startTime = ctx.currentTime + 0.05; 
+    // T0 Master Timeline Anchor Timestamp
+    const sharedStartTimeAnchor = ctx.currentTime + 0.06; 
+    const universalBeatDuration = 0.45; 
 
-    const beatUnitDuration = timeSignature.includes('/8') ? 0.32 : 0.50; 
-
-    const currentData = liveScoreRef.current;
-    const tracks = ['voice', 'wandindi', 'coro', 'kihembe', 'kigamba'];
-    let globalTimelineOffset = 0;
-
-    // TARGET SYNC INJECTION: Plays recorded vocal tracks exactly in line with the synths
+    // Stream Track 1: High-fidelity uncompressed voice playback line from memory channel
     if (voiceAudioBufferRef.current) {
-      const voiceSource = ctx.createBufferSource();
-      voiceSource.buffer = voiceAudioBufferRef.current;
-      voiceSource.connect(ctx.destination);
-      voiceSource.start(startTime);
+      const audioBufferSourceStream = ctx.createBufferSource();
+      audioBufferSourceStream.buffer = voiceAudioBufferRef.current;
+      audioBufferSourceStream.connect(ctx.destination);
+      audioBufferSourceStream.start(sharedStartTimeAnchor); // Fixed straight to master time window execution anchor
     }
 
-    const tokenizedTracks = {};
-    tracks.forEach(t => { tokenizedTracks[t] = currentData[t].split(/\s+/) });
-    const maxBeats = Math.max(...tracks.map(t => tokenizedTracks[t].length));
+    // Stream Track 2: Automated VST MIDI Instrument Notation Engine
+    const currentNotesArray = liveScoreRef.current.voice.split(/\s+/);
+    
+    trackingNotesTimeline.current.forEach((savedNoteEvent, index) => {
+      // Use the recorded time offset to trigger notes precisely when they were originally sung
+      const executionTimestamp = sharedStartTimeAnchor + savedNoteEvent.time;
+      scheduleOrganNote(ctx, savedNoteEvent.midi, executionTimestamp, universalBeatDuration);
+    });
 
-    for (let i = 0; i < maxBeats; i++) {
-      tracks.forEach(track => {
-        const noteSymbol = tokenizedTracks[track][i];
-        if (!noteSymbol) return;
+    const calculatedTotalSessionLength = trackingNotesTimeline.current.length > 0 
+      ? trackingNotesTimeline.current[trackingNotesTimeline.current.length - 1].time + 0.5
+      : 2.0;
 
-        const scalar = parseDuration(noteSymbol);
-        const noteDuration = beatUnitDuration * scalar;
-
-        if (!noteSymbol.includes('z')) {
-          if (track === 'voice') {
-            const midi = abcToMidi(noteSymbol);
-            if (midi) SynthEngines.playChurchOrgan(ctx, midiToFrequency(midi), startTime + globalTimelineOffset, noteDuration);
-          } else if (track === 'wandindi') {
-            const midi = abcToMidi(noteSymbol);
-            if (midi) SynthEngines.playWandindi(ctx, midiToFrequency(midi), startTime + globalTimelineOffset, noteDuration);
-          } else if (track === 'coro') {
-            const midi = abcToMidi(noteSymbol);
-            if (midi) SynthEngines.playCoro(ctx, midiToFrequency(midi), startTime + globalTimelineOffset, noteDuration);
-          } else if (track === 'kihembe') {
-            SynthEngines.playKihembe(ctx, true, startTime + globalTimelineOffset, noteDuration);
-          } else if (track === 'kigamba') {
-            SynthEngines.playKigamba(ctx, true, startTime + globalTimelineOffset, noteDuration);
-          }
-        }
-      });
-
-      let maxStepScalar = 1;
-      tracks.forEach(t => {
-        if (tokenizedTracks[t][i]) {
-          const s = parseDuration(tokenizedTracks[t][i]);
-          if (s > maxStepScalar) maxStepScalar = s;
-        }
-      });
-      globalTimelineOffset += beatUnitDuration * maxStepScalar;
-    }
-
-    setTimeout(() => setIsPlaying(false), (globalTimelineOffset * 1000) + 200);
+    setTimeout(() => setIsPlaying(false), (calculatedTotalSessionLength * 1000) + 100);
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-      
-      {/* Structural Configuration Settings Bar */}
-      <div style={{ backgroundColor: '#1a1a1a', padding: '12px', borderRadius: '8px', display: 'flex', flexWrap: 'wrap', gap: '15px' }}>
-        <div>
-          <label style={{ fontSize: '13px', color: '#aaa', marginRight: '8px' }}>Time Signature Meter:</label>
-          <select value={timeSignature} onChange={(e) => setTimeSignature(e.target.value)} style={{ padding: '8px', borderRadius: '4px', backgroundColor: '#333', color: '#fff', border: '1px solid #555' }}>
-            <option value="6/8">6/8 (Mũthĩrĩgũ / Compound)</option>
-            <option value="12/8">12/8 (Mũgoidi Rhythms)</option>
-            <option value="4/4">4/4 (Standard Studio)</option>
-          </select>
-        </div>
-
-        <div>
-          <label style={{ fontSize: '13px', color: '#aaa', marginRight: '8px' }}>Duration Length Modifier Tool:</label>
-          <select value={durationMode} onChange={(e) => setDurationMode(e.target.value)} style={{ padding: '8px', borderRadius: '4px', backgroundColor: '#333', color: '#fff', border: '1px solid #555' }}>
-            <option value="normal">Normal Duration</option>
-            <option value="dotted">Dotted Note (1.5x)</option>
-            <option value="double">Double Note (2x)</option>
-            <option value="half">Half Note (1/2x)</option>
-          </select>
-        </div>
-      </div>
-
       <div style={{ display: 'flex', gap: '10px' }}>
-        <button onClick={toggleRecording} style={{ flex: 1, backgroundColor: isRecording ? '#d32f2f' : '#4CAF50', color: '#fff', padding: '15px', fontWeight: 'bold', border: 'none', borderRadius: '6px' }}>
-          {isRecording ? '🛑 Stop Recording' : '🎤 Record Voice Clip'}
+        <button onClick={isRecording ? stopStudioRecording : startStudioRecording} style={{ flex: 1, backgroundColor: isRecording ? '#d32f2f' : '#4CAF50', color: '#fff', padding: '16px', fontWeight: 'bold', border: 'none', borderRadius: '6px', fontSize: '15px' }}>
+          {isRecording ? '🛑 Stop Recording Session' : '🎤 Record Voice to Notation'}
         </button>
-        <button onClick={playStudioTracks} style={{ flex: 1, backgroundColor: '#2196F3', color: '#fff', padding: '15px', fontWeight: 'bold', border: 'none', borderRadius: '6px' }}>
-          ▶️ Play Full Live Mix
+        <button onClick={runSynchronizedPlayback} style={{ flex: 1, backgroundColor: isPlaying ? '#ff9800' : '#2196F3', color: '#fff', padding: '16px', fontWeight: 'bold', border: 'none', borderRadius: '6px', fontSize: '15px' }} disabled={isPlaying || isRecording}>
+          ▶️ Play Synced Mix (Voice + Organ)
         </button>
       </div>
 
       <SheetMusicEditor 
         scoreData={scoreData} setScoreData={setScoreData}
-        lyrics={lyrics} setLyrics={setLyrics}
-        timeSignature={timeSignature} activeDurationModifier={durationMode}
+        lyrics={lyrics} setLyrics={setLyrics} timeSignature="4/4" activeDurationModifier="normal"
       />
     </div>
   );
