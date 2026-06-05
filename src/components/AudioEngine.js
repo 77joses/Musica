@@ -68,7 +68,8 @@ export const scheduleOrganNote = (ctx, midiNote, startTime, duration) => {
   masterGain.gain.linearRampToValueAtTime(0, startTime + duration);
   masterGain.connect(ctx.destination);
 
-  const partialHarmonics =;
+  // FIX: Added the mathematical integer harmonic frequencies [Fundamental, 2nd, 3rd, 4th, 8th]
+  const partialHarmonics = [1, 2, 3, 4, 8];
   const splitVolumes = [0.35, 0.25, 0.15, 0.10, 0.05];
 
   partialHarmonics.forEach((h, i) => {
