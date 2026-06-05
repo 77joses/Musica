@@ -10,14 +10,14 @@ export default function AppLayout() {
 
   const audioCtxRef = useRef(null);
   const liveScoreRef = useRef(scoreData);
-  const voiceAudioBufferRef = useRef(null); // High-fidelity in-memory audio storage
+  const voiceAudioBufferRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
   const animationFrameRef = useRef(null);
 
-  // Time tracking vectors
   const trackingNotesTimeline = useRef([]);
   const recordingStartTimeRef = useRef(0);
+  const currentActiveNoteRef = useRef(null); 
 
   useEffect(() => { liveScoreRef.current = scoreData; }, [scoreData]);
 
@@ -30,18 +30,27 @@ export default function AppLayout() {
     }
   };
 
+  const calculateABCLengthSuffix = (durationSeconds, beatUnit = 0.3) => {
+    const ratio = durationSeconds / beatUnit;
+    if (ratio >= 3.5) return "4";      
+    if (ratio >= 1.7) return "2";      
+    if (ratio >= 1.3) return ">";      
+    if (ratio <= 0.6) return "/2";     
+    return "";                         
+  };
+
   const startStudioRecording = async () => {
     await initAudio();
     setIsRecording(true);
     recordedChunksRef.current = [];
     trackingNotesTimeline.current = [];
     voiceAudioBufferRef.current = null;
+    currentActiveNoteRef.current = null;
     recordingStartTimeRef.current = audioCtxRef.current.currentTime;
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       
-      // Pipeline Step A: Raw Audio Stream Capture Engine
       mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       mediaRecorderRef.current.ondataavailable = (e) => {
         if (e.data.size > 0) recordedChunksRef.current.push(e.data);
@@ -51,53 +60,75 @@ export default function AppLayout() {
         const rawBlob = new Blob(recordedChunksRef.current, { type: 'audio/webm' });
         const arrayBuffer = await rawBlob.arrayBuffer();
         
-        // Decode block to store your uncompressed voice recording safely in memory
         audioCtxRef.current.decodeAudioData(arrayBuffer, (decodedAudioPCM) => {
           voiceAudioBufferRef.current = decodedAudioPCM;
-        }, (err) => console.error("PCM Audio Decoding Failure:", err));
+        }, (err) => console.error("PCM Decode Error:", err));
 
         stream.getTracks().forEach(track => track.stop());
       };
 
-      // Pipeline Step B: Real-Time Audio Engine Pitch Extraction
       const sourceNode = audioCtxRef.current.createMediaStreamSource(stream);
       const analyserNode = audioCtxRef.current.createAnalyser();
-      analyserNode.fftSize = 2048;
+      analyserNode.fftSize = 1024; 
       sourceNode.connect(analyserNode);
 
-      const bufferLength = analyserNode.fftSize;
-      const dataWindowArray = new Float32Array(bufferLength);
+      const dataWindowArray = new Float32Array(analyserNode.fftSize);
       let lastIdentifiedMidi = -1;
       let frameHoldCounter = 0;
 
       const continuousPitchAnalysisLoop = () => {
         analyserNode.getFloatTimeDomainData(dataWindowArray);
         const currentHz = pitchTrackerAutocorrelate(dataWindowArray, audioCtxRef.current.sampleRate);
+        const loopTime = audioCtxRef.current.currentTime;
         
         if (currentHz !== -1 && currentHz > 75 && currentHz < 700) {
           const calculatedMidi = frequencyToMidi(currentHz);
           
           if (calculatedMidi === lastIdentifiedMidi) {
             frameHoldCounter++;
-            if (frameHoldCounter === 5) { // Pitch hold validated (approx 100ms stability threshold)
-              const timestampOffset = audioCtxRef.current.currentTime - recordingStartTimeRef.current;
-              
-              const notesDictionary = ["C", "^C", "D", "^D", "E", "F", "^F", "G", "^G", "A", "^A", "B"];
-              let name = notesDictionary[calculatedMidi % 12];
-              let octaveFactor = Math.floor(calculatedMidi / 12) - 5;
-              if (octaveFactor < 0) name += (octaveFactor === -2) ? ",," : ",";
+            if (frameHoldCounter === 3) { 
+              const relativeStartTime = loopTime - recordingStartTimeRef.current;
 
-              // Append validated performance event to tracking timeline
-              trackingNotesTimeline.current.push({ midi: calculatedMidi, abc: name, time: timestampOffset });
-              
-              // Map the tracking timeline arrays back onto your sheet music view component
-              const sheetMusicString = trackingNotesTimeline.current.map(item => item.abc).join(" ");
-              setScoreData(prev => ({ ...prev, voice: sheetMusicString || 'z4' }));
+              if (currentActiveNoteRef.current && currentActiveNoteRef.current.midi !== calculatedMidi) {
+                const finishedNote = currentActiveNoteRef.current;
+                finishedNote.duration = loopTime - finishedNote.absoluteStartTime;
+                finishedNote.abc += calculateABCLengthSuffix(finishedNote.duration);
+                trackingNotesTimeline.current.push(finishedNote);
+                currentActiveNoteRef.current = null;
+              }
+
+              if (!currentActiveNoteRef.current) {
+                // FIXED: Array closed correctly below to avoid build errors
+                const notesDictionary = ["C", "^C", "D", "^D", "E", "F", "^F", "G", "^G", "A", "^A", "B"];
+                let name = notesDictionary[calculatedMidi % 12];
+                let octaveFactor = Math.floor(calculatedMidi / 12) - 5;
+                if (octaveFactor < 0) name += (octaveFactor === -2) ? ",," : ",";
+
+                currentActiveNoteRef.current = {
+                  midi: calculatedMidi,
+                  abc: name,
+                  time: relativeStartTime,
+                  absoluteStartTime: loopTime
+                };
+              }
             }
           } else {
             lastIdentifiedMidi = calculatedMidi;
             frameHoldCounter = 0;
           }
+        } else {
+          if (currentActiveNoteRef.current) {
+            const finishedNote = currentActiveNoteRef.current;
+            finishedNote.duration = loopTime - finishedNote.absoluteStartTime;
+            finishedNote.abc += calculateABCLengthSuffix(finishedNote.duration);
+            trackingNotesTimeline.current.push(finishedNote);
+            currentActiveNoteRef.current = null;
+
+            const sheetMusicString = trackingNotesTimeline.current.map(item => item.abc).join(" ");
+            setScoreData(prev => ({ ...prev, voice: sheetMusicString || 'z4' }));
+          }
+          lastIdentifiedMidi = -1;
+          frameHoldCounter = 0;
         }
         animationFrameRef.current = requestAnimationFrame(continuousPitchAnalysisLoop);
       };
@@ -105,7 +136,7 @@ export default function AppLayout() {
       mediaRecorderRef.current.start();
       continuousPitchAnalysisLoop();
     } catch (err) {
-      alert("Microphone connection failed.");
+      alert("Microphone configuration failed.");
       setIsRecording(false);
     }
   };
@@ -113,42 +144,48 @@ export default function AppLayout() {
   const stopStudioRecording = () => {
     setIsRecording(false);
     if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    
+    if (currentActiveNoteRef.current && audioCtxRef.current) {
+      const finishedNote = currentActiveNoteRef.current;
+      finishedNote.duration = audioCtxRef.current.currentTime - finishedNote.absoluteStartTime;
+      finishedNote.abc += calculateABCLengthSuffix(finishedNote.duration);
+      trackingNotesTimeline.current.push(finishedNote);
+      currentActiveNoteRef.current = null;
+    }
+
+    const sheetMusicString = trackingNotesTimeline.current.map(item => item.abc).join(" ");
+    setScoreData(prev => ({ ...prev, voice: sheetMusicString || 'z4' }));
+    
     if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
   };
 
-  // TIMELINE SYNCHRONIZATION ALIGNMENT PLAYBACK ENGINE
   const runSynchronizedPlayback = async () => {
     await initAudio();
     if (isPlaying) return;
     setIsPlaying(true);
 
     const ctx = audioCtxRef.current;
-    // T0 Master Timeline Anchor Timestamp
-    const sharedStartTimeAnchor = ctx.currentTime + 0.06; 
-    const universalBeatDuration = 0.45; 
+    const sharedStartTimeAnchor = ctx.currentTime + 0.08; 
+    const baselineDefaultDuration = 0.45;
 
-    // Stream Track 1: High-fidelity uncompressed voice playback line from memory channel
     if (voiceAudioBufferRef.current) {
       const audioBufferSourceStream = ctx.createBufferSource();
       audioBufferSourceStream.buffer = voiceAudioBufferRef.current;
       audioBufferSourceStream.connect(ctx.destination);
-      audioBufferSourceStream.start(sharedStartTimeAnchor); // Fixed straight to master time window execution anchor
+      audioBufferSourceStream.start(sharedStartTimeAnchor); 
     }
 
-    // Stream Track 2: Automated VST MIDI Instrument Notation Engine
-    const currentNotesArray = liveScoreRef.current.voice.split(/\s+/);
-    
-    trackingNotesTimeline.current.forEach((savedNoteEvent, index) => {
-      // Use the recorded time offset to trigger notes precisely when they were originally sung
+    trackingNotesTimeline.current.forEach((savedNoteEvent) => {
       const executionTimestamp = sharedStartTimeAnchor + savedNoteEvent.time;
-      scheduleOrganNote(ctx, savedNoteEvent.midi, executionTimestamp, universalBeatDuration);
+      const adaptiveDuration = savedNoteEvent.duration || baselineDefaultDuration;
+      scheduleOrganNote(ctx, savedNoteEvent.midi, executionTimestamp, adaptiveDuration);
     });
 
     const calculatedTotalSessionLength = trackingNotesTimeline.current.length > 0 
-      ? trackingNotesTimeline.current[trackingNotesTimeline.current.length - 1].time + 0.5
+      ? trackingNotesTimeline.current[trackingNotesTimeline.current.length - 1].time + 1.5
       : 2.0;
 
-    setTimeout(() => setIsPlaying(false), (calculatedTotalSessionLength * 1000) + 100);
+    setTimeout(() => setIsPlaying(false), (calculatedTotalSessionLength * 1000));
   };
 
   return (
